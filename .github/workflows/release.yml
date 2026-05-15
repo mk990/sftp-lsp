@@ -1,0 +1,104 @@
+name: release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: build ${{ matrix.goos }}/${{ matrix.goarch }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - goos: linux
+            goarch: amd64
+          - goos: linux
+            goarch: arm64
+          - goos: darwin
+            goarch: amd64
+          - goos: darwin
+            goarch: arm64
+          - goos: windows
+            goarch: amd64
+            ext: .exe
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Build
+        env:
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+          CGO_ENABLED: "0"
+          VERSION: ${{ github.ref_name }}
+        run: |
+          mkdir -p dist
+          out="sftp-lsp${{ matrix.ext }}"
+          go build -trimpath -ldflags "-s -w -X main.version=${VERSION}" -o "dist/${out}" ./cmd/sftp-lsp
+
+      - name: Package
+        env:
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+          VERSION: ${{ github.ref_name }}
+        run: |
+          base="sftp-lsp_${VERSION}_${GOOS}_${GOARCH}"
+          stage="dist/${base}"
+          mkdir -p "${stage}"
+          cp "dist/sftp-lsp${{ matrix.ext }}" "${stage}/"
+          cp LICENSE README.md "${stage}/"
+          if [ "${GOOS}" = "windows" ]; then
+            (cd dist && zip -r "${base}.zip" "${base}")
+          else
+            tar -C dist -czf "dist/${base}.tar.gz" "${base}"
+          fi
+          rm -rf "${stage}" "dist/sftp-lsp${{ matrix.ext }}"
+
+      - name: Checksum
+        run: |
+          cd dist
+          for f in sftp-lsp_*; do
+            sha256sum "$f" > "$f.sha256"
+          done
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sftp-lsp-${{ matrix.goos }}-${{ matrix.goarch }}
+          path: |
+            dist/sftp-lsp_*.tar.gz
+            dist/sftp-lsp_*.zip
+            dist/sftp-lsp_*.sha256
+          if-no-files-found: error
+
+  release:
+    name: github release
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+
+      - name: Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            artifacts/sftp-lsp_*.tar.gz
+            artifacts/sftp-lsp_*.zip
+            artifacts/sftp-lsp_*.sha256
+          generate_release_notes: true
+          fail_on_unmatched_files: true
