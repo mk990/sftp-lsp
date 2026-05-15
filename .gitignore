@@ -1,0 +1,31 @@
+# Build output
+/build/
+/dist/
+/sftp-lsp
+*.exe
+*.dll
+*.so
+*.dylib
+
+# Test / coverage
+*.test
+*.out
+coverage.txt
+coverage.html
+
+# Go workspace overrides (keep go.work / go.work.sum tracked)
+go.work.local
+
+# Local config — may contain credentials
+.vscode/sftp.json
+
+# IDE / editor
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+sftp-lsp
