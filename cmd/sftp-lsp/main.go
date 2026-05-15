@@ -11,17 +11,38 @@ import (
 var version = "dev" // overridden by -ldflags at build time
 
 func main() {
-	for i, arg := range os.Args[1:] {
+	// Strip mode-selecting flags from anywhere in os.Args so they work no matter
+	// where they appear — including after `__complete`, which is how cobra's
+	// generated shell-completion scripts invoke us (e.g. `sftp-lsp __complete
+	// --cli upload ""`). `--stdio`/`-stdio` is an editor-friendly alias for the
+	// default LSP mode (gopls / typescript-language-server convention).
+	cliMode := false
+	filtered := os.Args[:1]
+	for _, arg := range os.Args[1:] {
 		switch arg {
 		case "--cli":
-			os.Args = append(os.Args[:i+1], os.Args[i+2:]...)
+			cliMode = true
+			continue
+		case "--stdio", "-stdio":
+			continue
+		}
+		filtered = append(filtered, arg)
+	}
+	os.Args = filtered
+
+	if cliMode {
+		cli.Execute()
+		return
+	}
+
+	// Cobra's completion subcommands — including the hidden `__complete` helpers
+	// the generated shell scripts call into — route to CLI without requiring
+	// `--cli`, so `source <(sftp-lsp completion zsh)` works and tab-completion
+	// at the shell doesn't get stuck in LSP mode.
+	for _, arg := range os.Args[1:] {
+		if isCompletionCommand(arg) {
 			cli.Execute()
 			return
-		case "--stdio", "-stdio":
-			// Explicit alias for the default LSP-over-stdio mode. Recognized so
-			// editor configurations that follow the gopls / typescript-language-server
-			// convention work out of the box. Stripped from os.Args for tidiness.
-			os.Args = append(os.Args[:i+1], os.Args[i+2:]...)
 		}
 		if !isFlag(arg) {
 			break
@@ -38,3 +59,11 @@ func main() {
 }
 
 func isFlag(s string) bool { return len(s) > 0 && s[0] == '-' }
+
+func isCompletionCommand(s string) bool {
+	switch s {
+	case "completion", "__complete", "__completeNoDesc":
+		return true
+	}
+	return false
+}
