@@ -27,6 +27,7 @@ type SFTPHandler struct {
 	configs     []config.Config   // loaded from sftp.json
 	clients     map[string]client.RemoteClient // keyed by config.Name
 	rootURI     string
+	rootPath    string // filesystem path form of rootURI; used as the base for local↔remote path mapping
 	initialized bool
 }
 
@@ -86,6 +87,7 @@ func (h *SFTPHandler) handleInitialize(srv *Server, msg *Message) (*InitializeRe
 	if rootPath == "" {
 		rootPath = params.RootPath
 	}
+	h.rootPath = rootPath
 
 	// Attempt to load sftp.json from the workspace root.
 	if rootPath != "" {
@@ -165,8 +167,13 @@ func (h *SFTPHandler) runCommand(command string, args SftpCommandArgs, cfg *conf
 		return err
 	}
 
+	localBase := h.rootPath
+	if localBase == "" {
+		localBase = args.LocalPath // fall back to the request path when no workspace root is known
+	}
+
 	localFS := fs.NewLocal()
-	engine := transfer.NewEngine(localFS, c.FS(), args.LocalPath, cfg.RemotePath)
+	engine := transfer.NewEngine(localFS, c.FS(), localBase, cfg.RemotePath)
 
 	opts := transfer.Options{
 		Concurrency: cfg.Concurrency,
@@ -181,31 +188,39 @@ func (h *SFTPHandler) runCommand(command string, args SftpCommandArgs, cfg *conf
 	switch command {
 	case "sftp.upload.file", "sftp.upload.activeFile":
 		opts.Direction = transfer.Upload
-		remotePath := localToRemotePath(args.LocalPath, args.LocalPath, cfg.RemotePath)
+		remotePath := localToRemotePath(args.LocalPath, localBase, cfg.RemotePath)
 		return engine.UploadFile(ctx, args.LocalPath, remotePath, opts)
 
 	case "sftp.upload.folder", "sftp.upload.activeFolder":
 		opts.Direction = transfer.Upload
-		remotePath := localToRemotePath(args.LocalPath, args.LocalPath, cfg.RemotePath)
+		remotePath := localToRemotePath(args.LocalPath, localBase, cfg.RemotePath)
 		return engine.Transfer(ctx, args.LocalPath, remotePath, opts)
 
 	case "sftp.upload.project":
 		opts.Direction = transfer.Upload
-		return engine.Transfer(ctx, args.LocalPath, cfg.RemotePath, opts)
+		projectLocal := args.LocalPath
+		if projectLocal == "" {
+			projectLocal = localBase
+		}
+		return engine.Transfer(ctx, projectLocal, cfg.RemotePath, opts)
 
 	case "sftp.download.file", "sftp.download.activeFile":
 		opts.Direction = transfer.Download
-		localPath := remoteToLocalPath(args.RemotePath, cfg.RemotePath, args.LocalPath)
+		localPath := remoteToLocalPath(args.RemotePath, cfg.RemotePath, localBase)
 		return engine.DownloadFile(ctx, args.RemotePath, localPath, opts)
 
 	case "sftp.download.folder", "sftp.download.activeFolder":
 		opts.Direction = transfer.Download
-		localPath := remoteToLocalPath(args.RemotePath, cfg.RemotePath, args.LocalPath)
+		localPath := remoteToLocalPath(args.RemotePath, cfg.RemotePath, localBase)
 		return engine.Transfer(ctx, localPath, args.RemotePath, opts)
 
 	case "sftp.download.project":
 		opts.Direction = transfer.Download
-		return engine.Transfer(ctx, args.LocalPath, cfg.RemotePath, opts)
+		projectLocal := args.LocalPath
+		if projectLocal == "" {
+			projectLocal = localBase
+		}
+		return engine.Transfer(ctx, projectLocal, cfg.RemotePath, opts)
 
 	case "sftp.sync.localToRemote":
 		syncOpts := buildSyncOpts(cfg, opts)
