@@ -89,12 +89,13 @@ var downloadCmd = &cobra.Command{
 	Short: "Download a file or directory from the remote server",
 	Args:  cobra.RangeArgs(1, 2),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		remotePath := args[0]
-		_, cfg, c, err := connect()
+		workspaceRoot, cfg, c, err := connect()
 		if err != nil {
 			return err
 		}
 		defer c.Close()
+
+		remotePath := resolveRemotePath(args[0], cfg.RemotePath)
 
 		localPath := ""
 		if len(args) == 2 {
@@ -103,11 +104,10 @@ var downloadCmd = &cobra.Command{
 				return err
 			}
 		} else {
-			cwd, _ := os.Getwd()
-			localPath = filepath.Join(cwd, filepath.Base(remotePath))
+			localPath = defaultLocalDestination(remotePath, cfg.RemotePath, workspaceRoot)
 		}
 
-		engine := transfer.NewEngine(fs.NewLocal(), c.FS(), localPath, cfg.RemotePath)
+		engine := transfer.NewEngine(fs.NewLocal(), c.FS(), workspaceRoot, cfg.RemotePath)
 		opts := makeOpts(cfg, transfer.Download)
 		opts.DryRun = flagDryRun
 		opts.Progress = progressPrinter()
@@ -204,7 +204,7 @@ var listCmd = &cobra.Command{
 
 		remotePath := cfg.RemotePath
 		if len(args) == 1 {
-			remotePath = args[0]
+			remotePath = resolveRemotePath(args[0], cfg.RemotePath)
 		}
 
 		entries, err := c.FS().List(remotePath)
@@ -233,13 +233,13 @@ var deleteCmd = &cobra.Command{
 	Short: "Delete a file or directory on the remote server",
 	Args:  cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		remotePath := args[0]
-		_, _, c, err := connect()
+		_, cfg, c, err := connect()
 		if err != nil {
 			return err
 		}
 		defer c.Close()
 
+		remotePath := resolveRemotePath(args[0], cfg.RemotePath)
 		fi, err := c.FS().Stat(remotePath)
 		if err != nil {
 			return err
@@ -267,7 +267,8 @@ var mkdirCmd = &cobra.Command{
 			return err
 		}
 		defer c.Close()
-		return c.FS().MkdirAll(args[0], os.FileMode(cfg.DirPerm))
+		remotePath := resolveRemotePath(args[0], cfg.RemotePath)
+		return c.FS().MkdirAll(remotePath, os.FileMode(cfg.DirPerm))
 	},
 }
 
@@ -405,6 +406,39 @@ func localToRemote(localPath, localBase, remoteBase string) string {
 		return remoteBase
 	}
 	return strings.TrimRight(remoteBase, "/") + "/" + rel
+}
+
+// resolveRemotePath joins a user-supplied remote argument with cfg.RemotePath
+// when it is not already absolute. Without this, the SFTP server resolves bare
+// names against the SSH session's default working directory (usually $HOME),
+// not the project's configured remote root.
+func resolveRemotePath(arg, remoteBase string) string {
+	arg = filepath.ToSlash(arg)
+	if strings.HasPrefix(arg, "/") {
+		return arg
+	}
+	base := strings.TrimRight(remoteBase, "/")
+	if arg == "" || arg == "." {
+		return base
+	}
+	return base + "/" + strings.TrimPrefix(arg, "./")
+}
+
+// defaultLocalDestination picks where a downloaded file/dir should land when
+// the user didn't pass an explicit local-path. If the resolved remote sits
+// under cfg.RemotePath and we have a workspace root, mirror the relative
+// layout into the workspace; otherwise drop the basename into cwd.
+func defaultLocalDestination(remotePath, remoteBase, workspaceRoot string) string {
+	base := strings.TrimRight(remoteBase, "/")
+	if workspaceRoot != "" && strings.HasPrefix(remotePath, base+"/") {
+		rel := strings.TrimPrefix(remotePath, base+"/")
+		return filepath.Join(workspaceRoot, filepath.FromSlash(rel))
+	}
+	if workspaceRoot != "" && remotePath == base {
+		return workspaceRoot
+	}
+	cwd, _ := os.Getwd()
+	return filepath.Join(cwd, filepath.Base(remotePath))
 }
 
 func init() {
